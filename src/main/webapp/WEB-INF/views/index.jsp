@@ -1,130 +1,235 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>3D 레이저 슈터 게임</title>
-  <style>
-    body { margin: 0; overflow: hidden; }
-    #info {
-      position: absolute;
-      top: 10px; left: 10px;
-      color: #fff;
-      font-family: sans-serif;
-      z-index: 1;
-    }
-    #startBtn {
-      padding: 10px 20px;
-      font-size: 18px;
-      cursor: pointer;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL 3D 큐브</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #000;
+        }
+        canvas {
+            border: 2px solid #fff;
+        }
+    </style>
 </head>
 <body>
-  <div id="info">
-    <div id="score">점수: 0</div>
-    <button id="startBtn">게임 시작</button>
-  </div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
-  <audio id="laserSound" src="https://freesound.org/data/previews/66/66717_931655-lq.mp3"></audio>
+    <canvas id="glcanvas" width="640" height="480"></canvas>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
 
-  <script>
-    let scene, camera, renderer;
-    let raycaster = new THREE.Raycaster();
-    let mouse = new THREE.Vector2();
-    let targets = [];
-    let score = 0;
-    const scoreEl = document.getElementById('score');
-    const laserSound = document.getElementById('laserSound');
-    const startBtn = document.getElementById('startBtn');
+    <script>
+        // WebGL 컨텍스트 가져오기
+        const canvas = document.getElementById("glcanvas");
+        const gl = canvas.getContext("webgl");
 
-    function init() {
-      scene = new THREE.Scene();
-      scene.fog = new THREE.Fog(0x000000, 10, 60);
-
-      camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-      camera.position.z = 10;
-
-      renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      document.body.appendChild(renderer.domElement);
-
-      // 조명
-      const ambientLight = new THREE.AmbientLight(0xcccccc, 0.4);
-      scene.add(ambientLight);
-      const pointLight = new THREE.PointLight(0xffffff, 0.8);
-      camera.add(pointLight);
-      scene.add(camera);
-
-      window.addEventListener('resize', onWindowResize, false);
-      document.addEventListener('click', handleClick, false);
-
-      animate();
-    }
-
-    function onWindowResize() {
-      camera.aspect = window.innerWidth/window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    function spawnTarget() {
-      const geometry = new THREE.SphereGeometry(0.5, 16, 16);
-      const material = new THREE.MeshPhongMaterial({
-        color: Math.random() * 0xffffff,
-        shininess: 100
-      });
-      const target = new THREE.Mesh(geometry, material);
-      target.position.x = (Math.random() - 0.5) * 20;
-      target.position.y = (Math.random() - 0.5) * 10;
-      target.position.z = -20;
-      scene.add(target);
-      targets.push(target);
-
-      // 이동 애니메이션
-      const speed = 0.03 + Math.random() * 0.05;
-      target.userData.speed = speed;
-      setTimeout(spawnTarget, 1000);
-    }
-
-    function handleClick(event) {
-      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(targets);
-
-      if (intersects.length > 0) {
-        const obj = intersects[0].object;
-        scene.remove(obj);
-        targets = targets.filter(item => item !== obj);
-        score += 1;
-        scoreEl.textContent = `점수: ${score}`;
-        laserSound.currentTime = 0;
-        laserSound.play();
-      }
-    }
-
-    function animate() {
-      requestAnimationFrame(animate);
-      targets.forEach(t => {
-        t.position.z += t.userData.speed;
-        if (t.position.z > camera.position.z) {
-          scene.remove(t);
-          targets = targets.filter(item => item !== t);
+        if (!gl) {
+            alert("WebGL을 지원하지 않는 브라우저입니다. 다른 브라우저를 사용해 보세요.");
         }
-      });
-      renderer.render(scene, camera);
-    }
 
-    startBtn.addEventListener('click', () => {
-      score = 0;
-      scoreEl.textContent = '점수: 0';
-      startBtn.disabled = true;
-      spawnTarget();
-    });
+        // 셰이더 소스 (3D 객체를 그리는 프로그램)
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            attribute vec4 aVertexColor;
 
-    init();
-  </script>
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+
+            varying lowp vec4 vColor;
+
+            void main(void) {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                vColor = aVertexColor;
+            }
+        `;
+
+        const fsSource = `
+            varying lowp vec4 vColor;
+
+            void main(void) {
+                gl_FragColor = vColor;
+            }
+        `;
+
+        // 셰이더 프로그램 초기화
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+            const shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                alert('셰이더 프로그램 초기화 실패: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+
+            return shaderProgram;
+        }
+
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            return shader;
+        }
+
+        const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+        const programInfo = {
+            program: shaderProgram,
+            attribLocations: {
+                vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+                vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+            },
+            uniformLocations: {
+                projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+                modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+            },
+        };
+
+        // 큐브 버퍼 생성
+        function initBuffers(gl) {
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+            const positions = [
+                // 앞면
+                -1.0, -1.0,  1.0,
+                 1.0, -1.0,  1.0,
+                 1.0,  1.0,  1.0,
+                -1.0,  1.0,  1.0,
+
+                // 뒷면
+                -1.0, -1.0, -1.0,
+                -1.0,  1.0, -1.0,
+                 1.0,  1.0, -1.0,
+                 1.0, -1.0, -1.0,
+
+                // 윗면
+                -1.0,  1.0, -1.0,
+                -1.0,  1.0,  1.0,
+                 1.0,  1.0,  1.0,
+                 1.0,  1.0, -1.0,
+
+                // 아랫면
+                -1.0, -1.0, -1.0,
+                 1.0, -1.0, -1.0,
+                 1.0, -1.0,  1.0,
+                -1.0, -1.0,  1.0,
+
+                // 오른쪽
+                 1.0, -1.0, -1.0,
+                 1.0,  1.0, -1.0,
+                 1.0,  1.0,  1.0,
+                 1.0, -1.0,  1.0,
+
+                // 왼쪽
+                -1.0, -1.0, -1.0,
+                -1.0, -1.0,  1.0,
+                -1.0,  1.0,  1.0,
+                -1.0,  1.0, -1.0,
+            ];
+
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+            const faceColors = [
+                [1.0,  1.0,  1.0,  1.0],    // 앞면 (흰색)
+                [1.0,  0.0,  0.0,  1.0],    // 뒷면 (빨간색)
+                [0.0,  1.0,  0.0,  1.0],    // 윗면 (녹색)
+                [0.0,  0.0,  1.0,  1.0],    // 아랫면 (파란색)
+                [1.0,  1.0,  0.0,  1.0],    // 오른쪽 (노란색)
+                [1.0,  0.0,  1.0,  1.0],    // 왼쪽 (자홍색)
+            ];
+
+            let colors = [];
+            for (let j = 0; j < 6; j++) {
+                const c = faceColors[j];
+                colors = colors.concat(c, c, c, c);
+            }
+
+            const colorBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+            const indexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+            const indices = [
+                0,  1,  2,      0,  2,  3,    // 앞면
+                4,  5,  6,      4,  6,  7,    // 뒷면
+                8,  9,  10,     8,  10, 11,   // 윗면
+                12, 13, 14,     12, 14, 15,   // 아랫면
+                16, 17, 18,     16, 18, 19,   // 오른쪽
+                20, 21, 22,     20, 22, 23,   // 왼쪽
+            ];
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+            return {
+                position: positionBuffer,
+                color: colorBuffer,
+                indices: indexBuffer,
+            };
+        }
+
+        const buffers = initBuffers(gl);
+        const mat4 = glMatrix.mat4;
+        const projectionMatrix = mat4.create();
+        const modelViewMatrix = mat4.create();
+        let cubeRotation = 0.0;
+        let then = 0;
+
+        // 렌더링 루프
+        function render(now) {
+            now *= 0.001;
+            const deltaTime = now - then;
+            then = now;
+            
+            // 그리기 전 화면 초기화
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clearDepth(1.0);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // 뷰포트 설정
+            const fieldOfView = 45 * Math.PI / 180;
+            const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            const zNear = 0.1;
+            const zFar = 100.0;
+            mat4.perspective(projectionMatrix, fieldOfView, aspect, zNear, zFar);
+            mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]);
+            mat4.rotate(modelViewMatrix, modelViewMatrix, cubeRotation, [0, 0, 1]);
+            mat4.rotate(modelViewMatrix, modelViewMatrix, cubeRotation * 0.7, [0, 1, 0]);
+
+            // 버퍼 연결
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+            
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+            gl.useProgram(programInfo.program);
+            gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix);
+            gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelViewMatrix);
+            
+            // 그리기
+            gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+            cubeRotation += deltaTime;
+            
+            requestAnimationFrame(render);
+        }
+        
+        requestAnimationFrame(render);
+    </script>
 </body>
 </html>
